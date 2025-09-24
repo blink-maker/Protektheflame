@@ -1,0 +1,242 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Protect the Flame — V1 (Final)</title>
+<style>
+  :root{ --bg1:#0a0a12; --bg2:#1a0f16; --accent:#ff7a00; }
+  html,body{ height:100%; margin:0; font-family:Inter,Arial,sans-serif; background:radial-gradient(circle at 50% 30%, var(--bg2), var(--bg1)); color:#fff; overflow:hidden; }
+  canvas{ display:block; width:100vw; height:100vh; }
+  #uiScore{ position:absolute; left:50%; top:12px; transform:translateX(-50%); z-index:15; font-weight:700; color:var(--accent); text-shadow:0 0 8px rgba(255,122,0,0.12); }
+  #overlayButtons{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); display:flex; flex-direction:column; gap:10px; align-items:center; z-index:30; }
+  button, a.button-link{ background:var(--accent); color:#120; border:none; padding:10px 16px; border-radius:8px; font-weight:700; cursor:pointer; text-decoration:none; }
+  #menu{ position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); background: rgba(20,10,12,0.95); padding:20px 26px; border-radius:12px; box-shadow:0 8px 30px rgba(0,0,0,0.6); z-index:25; text-align:center; }
+  h1{ margin:0 0 10px; color:var(--accent); }
+  @media(max-width:640px){ #menu{ width:88vw } }
+</style>
+</head>
+<body>
+<canvas id="gameCanvas" role="img" aria-label="Protect the Flame game"></canvas>
+<div id="uiScore">Score: <span id="scoreValue">0s</span></div>
+<div id="overlayButtons"></div>
+
+<div id="menu" aria-modal="true" role="dialog">
+  <h1>🔥 Protect the Flame</h1>
+  <div style="color:#ccc; margin-bottom:10px;">Click / tap enemies to destroy them. Survive as long as you can — score is seconds.</div>
+  <button id="startBtn">Start</button>
+  <button id="showLbBtn" style="background:transparent;color:var(--accent);border:1px solid rgba(255,122,0,0.14);">Leaderboard</button>
+</div>
+
+<script>
+// ---------- Canvas & basic state ----------
+const canvas = document.getElementById('gameCanvas');
+const ctx = canvas.getContext('2d');
+
+let running = false;
+let startTime = 0;
+let elapsed = 0;
+let enemies = [];
+let particles = [];
+let lastEnemyTime = 0;
+let enemySpeed = 1.2;
+let leaderboard = JSON.parse(localStorage.getItem('protect_flame_lb') || '[]');
+let lastPalier = 0;
+const PALIER = 15; // secondes pour augmentation 0,5%
+
+const overlay = document.getElementById('overlayButtons');
+const menu = document.getElementById('menu');
+const scoreValueEl = document.getElementById('scoreValue');
+
+// Flame
+const flame = {
+  baseRadius: Math.max(36, Math.min(96, (window.innerWidth) * 0.048)), // 20% plus petit
+  radius: Math.max(36, Math.min(96, (window.innerWidth) * 0.048)),
+  x: window.innerWidth / 2,
+  y: window.innerHeight / 2
+};
+
+function resize(){
+  canvas.width = window.innerWidth;
+  canvas.height = window.innerHeight;
+  flame.baseRadius = Math.max(36, Math.min(96, (window.innerWidth) * 0.048));
+  flame.x = canvas.width / 2;
+  flame.y = canvas.height / 2;
+  updateFlameRadius();
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ---------- Audio ----------
+const AudioCtx = window.AudioContext || window.webkitAudioContext;
+let audioCtx = null;
+let bgGain = null;
+function ensureAudio(){ if(!audioCtx) audioCtx = new AudioCtx(); }
+function playSFX(type){
+  if(!audioCtx) return;
+  const now = audioCtx.currentTime;
+  const osc = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  osc.connect(g); g.connect(audioCtx.destination);
+  if(type === 'destroy'){ osc.type='triangle'; osc.frequency.setValueAtTime(450,now); g.gain.setValueAtTime(0.08,now); g.gain.exponentialRampToValueAtTime(0.001,now+0.25); }
+  else if(type === 'gameover'){ osc.type='square'; osc.frequency.setValueAtTime(90,now); g.gain.setValueAtTime(0.18,now); g.gain.exponentialRampToValueAtTime(0.001,now+0.6); }
+  osc.start(now); osc.stop(now + 0.5);
+}
+
+// ---------- Flame ----------
+function updateFlameRadius(){
+  const growth = Math.min(60, elapsed * 0.08);
+  flame.radius = flame.baseRadius + growth;
+}
+function spawnFlameParticles(x,y,count=8){
+  for(let i=0;i<count;i++){
+    const ang = Math.random()*Math.PI*2;
+    const speed = Math.random()*2 + 0.5;
+    const color = `hsl(${30 + Math.random()*40}, 100%, ${50 + Math.random()*10}%)`;
+    particles.push({ x,y, vx:Math.cos(ang)*speed, vy:Math.sin(ang)*speed - 1, life:50 + Math.random()*30, ttl:0, angle:ang, color });
+  }
+}
+function drawFlame(now){
+  const g = ctx.createRadialGradient(flame.x, flame.y - flame.radius*0.25, 1, flame.x, flame.y, flame.radius*1.4);
+  g.addColorStop(0, 'rgba(255,240,150,1)'); g.addColorStop(0.45, 'rgba(255,120,20,0.95)'); g.addColorStop(1, 'rgba(160,10,10,0.7)');
+  ctx.save(); ctx.beginPath(); ctx.fillStyle = g; ctx.shadowColor='rgba(255,120,0,0.7)'; ctx.shadowBlur = Math.max(8, flame.radius*0.6); ctx.arc(flame.x, flame.y, flame.radius, 0, Math.PI*2); ctx.fill(); ctx.restore();
+  const flickerY = flame.y - flame.radius*0.8 - Math.sin(now*0.0017)*4;
+  ctx.beginPath(); ctx.fillStyle='rgba(255,250,210,0.95)'; ctx.ellipse(flame.x, flickerY, flame.radius*0.25, flame.radius*0.45, 0, 0, Math.PI*2); ctx.fill();
+  if(Math.random() < 0.35) spawnFlameParticles(flame.x, flame.y - flame.radius*0.5, 4);
+}
+
+// ---------- Particles ----------
+function updateParticles(dt){
+  for(let i=particles.length-1;i>=0;i--){
+    const p = particles[i];
+    p.ttl += dt/16;
+    if(p.ttl >= p.life){ particles.splice(i,1); continue; }
+    p.angle += 0.05;
+    p.x += Math.cos(p.angle)*0.5 + p.vx * (dt/16);
+    p.y += Math.sin(p.angle)*0.5 + p.vy * (dt/16);
+  }
+}
+function drawParticles(){
+  for(const p of particles){ const alpha = 1 - (p.ttl / p.life); ctx.globalAlpha = Math.max(0, alpha); ctx.fillStyle = p.color; ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(1, 3*(1-alpha)), 0, Math.PI*2); ctx.fill(); } ctx.globalAlpha = 1;
+}
+
+// ---------- Enemies ----------
+function spawnEnemy(){
+  const size = 14 + Math.random()*26;
+  const edge = Math.floor(Math.random()*4);
+  let x,y;
+  if(edge === 0){ x = Math.random()*canvas.width; y = -size - 8; }
+  else if(edge === 1){ x = canvas.width + size + 8; y = Math.random()*canvas.height; }
+  else if(edge === 2){ x = Math.random()*canvas.width; y = canvas.height + size + 8; }
+  else { x = -size - 8; y = Math.random()*canvas.height; }
+  const angle = Math.atan2(flame.y - y, flame.x - x);
+  const base = (Math.random()*0.8) + 0.8;
+  const speed = (base + (elapsed/60)*0.12) * enemySpeed;
+  const vx = Math.cos(angle) * speed;
+  const vy = Math.sin(angle) * speed;
+  const shapes = ["circle","square","triangle","hexagon"];
+  const colors = ["#ff4d4d","#7eff7e","#4de6ff","#ffd24d","#c277ff","#ff9a4d"];
+  const shape = shapes[Math.floor(Math.random()*shapes.length)];
+  const color = colors[Math.floor(Math.random()*colors.length)];
+  enemies.push({ x,y,vx,vy,r:size,shape,color, hp: shape === 'hexagon' ? 2 : 1 });
+}
+function drawEnemy(e){ ctx.save(); ctx.translate(e.x,e.y); ctx.fillStyle = e.color; if(e.shape==='circle'){ ctx.beginPath(); ctx.arc(0,0,e.r,0,Math.PI*2); ctx.fill(); } else if(e.shape==='square'){ ctx.fillRect(-e.r,-e.r,e.r*2,e.r*2); } else if(e.shape==='triangle'){ ctx.beginPath(); ctx.moveTo(0,-e.r); ctx.lineTo(e.r,e.r); ctx.lineTo(-e.r,e.r); ctx.closePath(); ctx.fill(); } else { ctx.beginPath(); for(let i=0;i<6;i++){ const ang=(Math.PI/3)*i - Math.PI/6; const px=Math.cos(ang)*e.r; const py=Math.sin(ang)*e.r; i===0?ctx.moveTo(px,py):ctx.lineTo(px,py);} ctx.closePath(); ctx.fill(); } ctx.restore(); }
+
+// ---------- Input ----------
+canvas.addEventListener('pointerdown', (ev) => {
+  if(!audioCtx){ ensureAudio(); startBackgroundMusic(); }
+  if(!running) return;
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const mx = (ev.clientX - rect.left) * scaleX;
+  const my = (ev.clientY - rect.top) * scaleY;
+  for(let i=enemies.length-1;i>=0;i--){
+    const e = enemies[i];
+    const dx = mx - e.x, dy = my - e.y;
+    if(dx*dx + dy*dy <= (e.r*1.2)*(e.r*1.2)){
+      e.hp = (e.hp||1) - 1;
+      for(let k=0;k<18;k++){
+        const ang = Math.random()*Math.PI*2; const sp = Math.random()*3 + 0.4;
+        particles.push({ x: e.x + Math.cos(ang)*(Math.random()*e.r*0.4), y: e.y + Math.sin(ang)*(Math.random()*e.r*0.4), vx: Math.cos(ang)*sp + (Math.random()-0.5), vy: Math.sin(ang)*sp + (Math.random()-0.5), life:40+Math.random()*40, ttl:0, angle:ang, color:e.color });
+      }
+      playSFX('destroy');
+      flame.baseRadius = Math.min(flame.baseRadius + 0.8, Math.max(36, Math.min(220, flame.baseRadius + 0.8)));
+      if(e.hp <= 0) enemies.splice(i,1);
+      break;
+    }
+  }
+});
+
+// ---------- Game loop ----------
+let lastTime = performance.now();
+function frame(now){
+  const dt = Math.min(48, now - lastTime);
+  lastTime = now;
+
+  if(running){
+    ctx.fillStyle = '#120305';
+    ctx.fillRect(0,0,canvas.width,canvas.height);
+
+    if(now - lastEnemyTime > 1200) { spawnEnemy(); lastEnemyTime = now; } // spawn plus lent au départ
+    updateParticles(dt);
+
+    for(let i=enemies.length-1;i>=0;i--){
+      const e = enemies[i];
+      e.x += e.vx * (dt/16);
+      e.y += e.vy * (dt/16);
+      if(e.x < -200 || e.x > canvas.width + 200 || e.y < -200 || e.y > canvas.height + 200){ enemies.splice(i,1); continue; }
+      const dx = e.x - flame.x, dy = e.y - flame.y;
+      if(dx*dx + dy*dy < (flame.radius*0.85 + e.r) ** 2){ playSFX('gameover'); endGame(); break; }
+    }
+
+    drawFlame(now);
+    for(const e of enemies) drawEnemy(e);
+    drawParticles();
+
+    elapsed = Math.floor((Date.now() - startTime) / 1000);
+    scoreValueEl.textContent = elapsed + 's';
+    updateFlameRadius();
+
+    if(elapsed > 0 && elapsed % PALIER === 0 && lastPalier !== elapsed){
+      lastPalier = elapsed;
+      enemySpeed *= 1.005;
+      for(const e of enemies){ e.vx *= 1.005; e.vy *= 1.005; }
+      spawnFlameParticles(flame.x, flame.y - flame.radius*0.2, 28);
+    }
+  }
+
+  requestAnimationFrame(frame);
+}
+requestAnimationFrame(frame);
+
+// ---------- Controls ----------
+function startGame(){
+  enemies.length = 0; particles.length = 0; enemySpeed = 1.2; lastPalier = 0;
+  startTime = Date.now(); elapsed = 0; running = true; menu.style.display = 'none'; overlay.innerHTML = '';
+}
+function endGame(){
+  running = false;
+  const final = Math.floor((Date.now() - startTime) / 1000);
+  const name = prompt('Enter your name to save score:') || 'Anon';
+  leaderboard.push({ name, score: final }); leaderboard.sort((a,b)=>b.score - a.score); if(leaderboard.length > 10) leaderboard.length = 10; localStorage.setItem('protect_flame_lb', JSON.stringify(leaderboard));
+  showEndOverlay(final);
+}
+
+// ---------- Overlay ----------
+function showEndOverlay(final){
+  overlay.innerHTML = '';
+  const btn = document.createElement('button'); btn.textContent = 'Play Again'; btn.onclick = ()=>{ overlay.innerHTML=''; startGame(); }; overlay.appendChild(btn);
+  const share = document.createElement('a'); share.className='button-link'; share.textContent='Share on X'; const tweetText = `I survived ${final} seconds in Protect the Flame ! Try to beat my score if you also want a chance to win a rare Fogo gem ! @fogoChain\n\nJoin the Discord (https://discord.gg/FzhQJRmrnj) and play here: ${window.location.href}`; share.href = `https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetText)}`; share.target = '_blank'; overlay.appendChild(share);
+}
+
+// ---------- Menu wiring ----------
+document.getElementById('startBtn').addEventListener('click', ()=>{ startGame(); if(!audioCtx){ ensureAudio(); startBackgroundMusic(); } });
+document.getElementById('showLbBtn').addEventListener('click', ()=>{ const popup = document.createElement('div'); popup.id='lbPopup'; popup.style='position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);background:rgba(18,9,10,0.96);padding:16px;border-radius:10px;z-index:40;text-align:left;'; let html = '<strong>Leaderboard</strong><br><br>'; if(leaderboard.length===0) html += 'No scores yet<br>'; else leaderboard.forEach((s,i)=> html += `${i+1}. ${s.name}: ${s.score}s<br>`); html += '<br><button id="lbClose">Close</button>'; popup.innerHTML = html; document.body.appendChild(popup); document.getElementById('lbClose').addEventListener('click', ()=>{ document.getElementById('lbPopup').remove(); }); });
+
+// Start audio on first pointerdown anywhere (mobile)
+document.body.addEventListener('pointerdown', function initAudioOnFirstUse(){ if(!audioCtx){ ensureAudio(); startBackgroundMusic(); } document.body.removeEventListener('pointerdown', initAudioOnFirstUse); }, {once:true});
+
+</script>
+</body>
+</html>
