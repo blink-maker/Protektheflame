@@ -227,7 +227,7 @@ function endGame(){
 function showEndOverlay(final){
   overlay.innerHTML = '';
   const btn = document.createElement('button'); btn.textContent = 'Play Again'; btn.onclick = ()=>{ overlay.innerHTML=''; startGame(); }; overlay.appendChild(btn);
-  const share = document.createElement('a'); share.className='button-link'; share.textContent='Share on X'; const tweetText = `I survived ${final} seconds in Protect the Flame ! Try to beat my score if you also want a chance to win a rare Fogo gem ! @fogoChain\n\nJoin the Discord (https://discord.gg/FzhQJRmrnj) and play here: ${window.location.href}`; share.href = `https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetText)}`; share.target = '_blank'; overlay.appendChild(share);
+  const share = document.createElement('a'); share.className='button-link'; share.textContent='Share on X'; const tweetText = `I survived ${final} seconds in Protect the Flame ! Try to beat my score if you also want a chance to win a rare Fogo gem ! @fogoChain\n\nJoin the Discord (https://discord.gg/Fogochain) and play here: ${window.location.href}`; share.href = `https://twitter.com/intent/tweet?text=${encodeURIComponent(tweetText)}`; share.target = '_blank'; overlay.appendChild(share);
 }
 
 // ---------- Menu wiring ----------
@@ -240,3 +240,4 @@ document.body.addEventListener('pointerdown', function initAudioOnFirstUse(){ if
 </script>
 </body>
 </html>
+
